@@ -19,10 +19,19 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Source .env to get credentials
-set -a
-source .env
-set +a
+# Extract credentials from .env (safer than source - avoids code injection)
+get_env_value() {
+    grep "^$1=" .env 2>/dev/null | cut -d= -f2- | head -1
+}
+
+LANGFUSE_INIT_PROJECT_PUBLIC_KEY=$(get_env_value "LANGFUSE_INIT_PROJECT_PUBLIC_KEY")
+LANGFUSE_INIT_PROJECT_SECRET_KEY=$(get_env_value "LANGFUSE_INIT_PROJECT_SECRET_KEY")
+
+if [ -z "$LANGFUSE_INIT_PROJECT_PUBLIC_KEY" ] || [ -z "$LANGFUSE_INIT_PROJECT_SECRET_KEY" ]; then
+    echo -e "${RED}Error: Could not read API keys from .env${NC}"
+    echo "Ensure LANGFUSE_INIT_PROJECT_PUBLIC_KEY and LANGFUSE_INIT_PROJECT_SECRET_KEY are set"
+    exit 1
+fi
 
 # Find Python 3.11+
 PYTHON=""
