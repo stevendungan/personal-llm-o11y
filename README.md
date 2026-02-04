@@ -4,6 +4,8 @@ Self-hosted Langfuse for capturing every Claude Code conversation — prompts, r
 
 This template provides a complete, production-ready setup for observing your Claude Code sessions using Langfuse. Everything runs locally in Docker, with automatic session tracking and incremental state management.
 
+**Read the full story:** [I Built My Own Observability for Claude Code](https://doneyli.substack.com/p/i-built-my-own-observability-for) — why I built this, how it works, and screenshots of the setup in action.
+
 ## Prerequisites
 
 - Docker and Docker Compose
