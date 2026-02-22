@@ -766,10 +766,16 @@ def create_otel_trace(
         },
     ):
         if otel_logger:
+            span_ctx = otel_trace.get_current_span().get_span_context()
+            tid = format(span_ctx.trace_id, "032x")
+            user_preview = _truncate_for_attr(user_text, 500)
+            output_preview = _truncate_for_attr(final_output, 500)
             otel_logger.info(
-                "Processing turn %d", turn_num,
+                "trace_id=%s Turn %d | user: %s", tid, turn_num, user_preview,
                 extra={"session.id": session_id, "project.name": project_name,
-                       "tool_count": len(all_tool_calls)},
+                       "tool_count": len(all_tool_calls),
+                       "user.message": user_preview,
+                       "assistant.response": output_preview},
             )
 
         # Child span: "Claude Response"
@@ -785,9 +791,13 @@ def create_otel_trace(
             },
         ):
             if otel_logger:
+                span_ctx = otel_trace.get_current_span().get_span_context()
+                tid = format(span_ctx.trace_id, "032x")
                 otel_logger.info(
-                    "LLM response from %s", model,
-                    extra={"model": model, "tool_count": len(all_tool_calls)},
+                    "trace_id=%s LLM response | model=%s tools=%d | %s", tid, model, len(all_tool_calls),
+                    _truncate_for_attr(final_output, 500),
+                    extra={"model": model, "tool_count": len(all_tool_calls),
+                           "response.preview": _truncate_for_attr(final_output, 500)},
                 )
 
         # Child spans: "Tool: {name}"
@@ -804,9 +814,15 @@ def create_otel_trace(
                 },
             ):
                 if otel_logger:
+                    span_ctx = otel_trace.get_current_span().get_span_context()
+                    tid = format(span_ctx.trace_id, "032x")
+                    input_preview = _truncate_for_attr(tool_input_str, 500)
+                    output_preview = _truncate_for_attr(tool_output_str, 300)
                     otel_logger.info(
-                        "Tool call: %s", tool_call["name"],
-                        extra={"tool.name": tool_call["name"], "tool.id": tool_call["id"]},
+                        "trace_id=%s Tool: %s | input: %s | output: %s",
+                        tid, tool_call["name"], input_preview, output_preview,
+                        extra={"tool.name": tool_call["name"], "tool.id": tool_call["id"],
+                               "tool.input": input_preview, "tool.output": output_preview},
                     )
 
     debug(f"Created OTEL trace for turn {turn_num}")
