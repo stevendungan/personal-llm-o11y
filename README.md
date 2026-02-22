@@ -241,9 +241,9 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
    }
    ```
 
-3. **Install OpenTelemetry packages** (included automatically if you ran `install-hook.sh`):
+3. **Install Python dependencies** (included automatically if you ran `install-hook.sh`):
    ```bash
-   ~/.claude/hooks/venv/bin/pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+   ~/.claude/hooks/venv/bin/pip install -r requirements.txt
    ```
 
 4. **Verify traces** in Grafana Cloud:
@@ -551,6 +551,14 @@ metadata={
     "estimated_tokens": estimate_tokens(user_text + final_output),
 }
 ```
+
+## Roadmap
+
+| Priority | Item |
+|----------|------|
+| **High** | Clean sensitive data before writing to Tempo/Loki |
+| Medium | Create metrics from traces |
+| Medium | Track dollar cost of Claude Code calls |
 
 ## Disclaimer
 

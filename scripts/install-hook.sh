@@ -75,7 +75,7 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 
 echo "Installing Python packages..."
 "$VENV_PYTHON" -m pip install --quiet --upgrade pip
-"$VENV_PYTHON" -m pip install --quiet langfuse opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+"$VENV_PYTHON" -m pip install --quiet -r "requirements.txt"
 
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ Installed langfuse and opentelemetry packages${NC}"

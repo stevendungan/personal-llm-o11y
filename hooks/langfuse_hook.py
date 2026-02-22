@@ -782,6 +782,7 @@ def create_otel_trace(
         with tracer.start_as_current_span(
             name="Claude Response",
             attributes={
+                "session.id": session_id,
                 "llm.model": model,
                 "llm.input": _truncate_for_attr(user_text),
                 "llm.output": _truncate_for_attr(final_output),
@@ -807,6 +808,7 @@ def create_otel_trace(
             with tracer.start_as_current_span(
                 name=f"Tool: {tool_call['name']}",
                 attributes={
+                    "session.id": session_id,
                     "tool.name": tool_call["name"],
                     "tool.id": tool_call["id"],
                     "tool.input": _truncate_for_attr(tool_input_str),
