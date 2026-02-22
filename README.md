@@ -1,10 +1,10 @@
 # Claude Code + Langfuse: Session Observability Template
 
-Self-hosted Langfuse for capturing every Claude Code conversation — prompts, responses, tool calls, and session grouping. Optionally export traces to **Grafana Cloud** (Tempo) via OTLP.
+> Forked from [doneyli/claude-code-langfuse-template](https://github.com/doneyli/claude-code-langfuse-template) by [doneyli](https://github.com/doneyli). Read the original blog post: [I Built My Own Observability for Claude Code](https://doneyli.substack.com/p/i-built-my-own-observability-for).
+
+Self-hosted Langfuse for capturing every Claude Code conversation — prompts, responses, tool calls, and session grouping. Optionally export traces to **Grafana Cloud** (Tempo) via OTLP and container logs to **Grafana Cloud** (Loki) via Alloy.
 
 This template provides a complete, production-ready setup for observing your Claude Code sessions. Everything runs locally in Docker, with automatic session tracking and incremental state management. Traces can be sent to Langfuse, Grafana Cloud, or both simultaneously.
-
-**Read the full story:** [I Built My Own Observability for Claude Code](https://doneyli.substack.com/p/i-built-my-own-observability-for) — why I built this, how it works, and screenshots of the setup in action.
 
 ## Prerequisites
 
@@ -66,6 +66,9 @@ Once setup is complete, the only thing you need to do after rebooting your machi
 ```bash
 cd claude-code-langfuse-template
 docker compose up -d
+
+# If using Grafana Cloud log collection:
+docker compose --profile logs up -d
 ```
 
 Wait 30-60 seconds for all services to initialize. The hook, env vars, and credentials persist across restarts — no reconfiguration needed.
@@ -143,16 +146,16 @@ The Langfuse hook runs as a Claude Code **Stop hook** — it executes after each
        │
        │ HTTP POST
        ▼
-┌──────────────────┐
-│ Langfuse API     │
-│ (localhost:3050) │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────────────┐
-│ PostgreSQL + ClickHouse  │
-│ (traces, analytics)      │
-└──────────────────────────┘
+┌──────────────────┐     ┌──────────────────────┐
+│ Langfuse API     │     │ Grafana Alloy        │
+│ (localhost:3050) │     │ (Docker sidecar)     │
+└──────┬───────────┘     └──────┬───────────────┘
+       │                        │ Container logs
+       ▼                        ▼
+┌──────────────────────────┐  ┌──────────────────────┐
+│ PostgreSQL + ClickHouse  │  │ Grafana Cloud        │
+│ (traces, analytics)      │  │ (Loki via push API)  │
+└──────────────────────────┘  └──────────────────────┘
 ```
 
 **Key Features:**
@@ -160,7 +163,8 @@ The Langfuse hook runs as a Claude Code **Stop hook** — it executes after each
 - **Incremental state tracking**: Only processes new messages since last run
 - **Session grouping**: All turns in a conversation are linked by session ID
 - **Tool call tracking**: Each tool invocation is captured as a span with input/output
-- **Grafana Cloud export**: Optionally send traces to Grafana Cloud Tempo via OTLP
+- **Grafana Cloud traces**: Optionally send traces to Grafana Cloud Tempo via OTLP
+- **Grafana Cloud logs**: Optionally ship Docker container logs to Grafana Cloud Loki via Alloy
 - **Dual-backend support**: Send to Langfuse, Grafana Cloud, or both — each backend is independently fenced
 - **Graceful failure**: Errors are logged but don't interrupt Claude Code
 - **Opt-in by default**: Only runs when `TRACE_TO_LANGFUSE=true` and/or `TRACE_TO_GRAFANA=true`
@@ -204,7 +208,13 @@ All configuration is managed through environment variables in `~/.claude/setting
 - `GRAFANA_INSTANCE_ID`: Numeric instance ID (used as basic auth username)
 - `GRAFANA_API_TOKEN`: API token with `traces:write` scope
 
-Both backends can be enabled simultaneously. Each is independently health-checked and fenced — if one is unavailable, the other continues working.
+**Grafana Cloud Logs (optional, Docker Compose only):**
+
+- `GRAFANA_LOKI_URL`: Loki push URL (e.g. `https://logs-prod-us-central1.grafana.net/loki/api/v1/push`)
+- `GRAFANA_LOKI_USERNAME`: Loki instance ID (used as basic auth username)
+- `GRAFANA_LOKI_PASSWORD`: API token with `logs:write` scope
+
+Both trace backends can be enabled simultaneously. Each is independently health-checked and fenced — if one is unavailable, the other continues working.
 
 ### Grafana Cloud Setup
 
@@ -238,6 +248,39 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
    - Go to **Explore > Tempo**
    - Search for `service.name = claude-code-hook`
    - Each trace has a root span "Turn N" with children "Claude Response" and "Tool: X"
+
+### Grafana Cloud Logs Setup
+
+To ship Docker container logs (Langfuse, PostgreSQL, ClickHouse, Redis, MinIO) to Grafana Cloud Loki:
+
+1. **Get your Loki credentials** from the Grafana Cloud portal:
+   - Log in at [grafana.com](https://grafana.com) and navigate to your stack
+   - Go to **Connections > Hosted Logs** (or the Loki section)
+   - Copy the **URL**, **User** (instance ID), and generate an **API token** with `logs:write` scope
+
+2. **Add the env vars** to your `.env` file:
+   ```
+   GRAFANA_LOKI_URL=https://logs-prod-us-central1.grafana.net/loki/api/v1/push
+   GRAFANA_LOKI_USERNAME=123456
+   GRAFANA_LOKI_PASSWORD=glc_eyJ...
+   ```
+
+3. **Start services with the `logs` profile**:
+   ```bash
+   docker compose --profile logs up -d
+   ```
+   This starts all the normal services plus a [Grafana Alloy](https://grafana.com/docs/alloy/) sidecar that collects container logs and ships them to Loki.
+
+4. **Verify logs** in Grafana Cloud:
+   - Open your Grafana Cloud instance
+   - Go to **Explore > Loki**
+   - Query: `{job="langfuse-local"}`
+   - Filter by container: `{job="langfuse-local", container="langfuse-web-1"}`
+
+If you're already running, restart with the profile:
+```bash
+docker compose --profile logs up -d
+```
 
 ### Customization
 
@@ -447,6 +490,7 @@ docker compose up -d
 - **clickhouse**: Analytics database (aggregations, dashboards)
 - **redis**: Cache and job queue
 - **minio**: S3-compatible object storage (media uploads, exports)
+- **alloy** *(optional, `--profile logs`)*: Collects Docker container logs and ships to Grafana Cloud Loki
 
 ### Data Flow
 
@@ -533,8 +577,10 @@ MIT License - see LICENSE file for details.
 
 ## Credits
 
+- [doneyli/claude-code-langfuse-template](https://github.com/doneyli/claude-code-langfuse-template) - Original project by [doneyli](https://github.com/doneyli)
 - [Langfuse](https://langfuse.com/) - Open-source LLM observability
-- [Grafana Cloud](https://grafana.com/products/cloud/) - Observability platform (Tempo for distributed tracing)
+- [Grafana Cloud](https://grafana.com/products/cloud/) - Observability platform (Tempo for traces, Loki for logs)
+- [Grafana Alloy](https://grafana.com/docs/alloy/) - OpenTelemetry-native observability collector
 - [OpenTelemetry](https://opentelemetry.io/) - Vendor-neutral observability framework
 - [Anthropic Claude](https://claude.ai/) - AI assistant platform
 

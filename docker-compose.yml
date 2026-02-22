@@ -139,6 +139,22 @@ services:
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
+  alloy:
+    image: docker.io/grafana/alloy:latest
+    restart: always
+    profiles: ["logs"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL}
+      GRAFANA_LOKI_USERNAME: ${GRAFANA_LOKI_USERNAME}
+      GRAFANA_LOKI_PASSWORD: ${GRAFANA_LOKI_PASSWORD}
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --stability.level=generally-available
+
 volumes:
   langfuse_postgres_data:
     driver: local
