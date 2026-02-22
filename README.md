@@ -20,8 +20,8 @@ Follow these steps to get Langfuse observability running in under 5 minutes:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/doneyli/claude-code-langfuse-template.git
-   cd claude-code-langfuse-template
+   git clone git@github.com:stevendungan/personal-llm-o11y.git
+   cd personal-llm-o11y
    ```
 
    **Optional: Verify prerequisites**
@@ -64,7 +64,7 @@ Follow these steps to get Langfuse observability running in under 5 minutes:
 Once setup is complete, the only thing you need to do after rebooting your machine is start the Docker containers:
 
 ```bash
-cd claude-code-langfuse-template
+cd personal-llm-o11y
 docker compose up -d
 
 # If using Grafana Cloud log collection:
@@ -276,7 +276,7 @@ To ship Docker container logs (Langfuse, PostgreSQL, ClickHouse, Redis, MinIO) t
 4. **Verify logs** in Grafana Cloud:
    - Open your Grafana Cloud instance
    - Go to **Drilldown > Logs** in the main menu
-   - Search for the **`langfuse-local`** service in the service list
+   - Search for the **`personal-llm-o11y`** service in the service list
    - Click **Show logs** to view entries, then use **(+) Add label** to filter by `container` (e.g. `langfuse-web-1`)
 
 If you're already running, restart with the profile:

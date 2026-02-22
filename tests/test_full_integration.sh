@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full integration test for claude-code-langfuse-template
+# Full integration test for personal-llm-o11y
 #
 # This script validates the complete setup process:
 # 1. Environment generation

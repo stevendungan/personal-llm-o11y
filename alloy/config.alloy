@@ -35,8 +35,8 @@ loki.source.docker "containers" {
 loki.process "containers" {
   stage.static_labels {
     values = {
-      job     = "langfuse-local",
-      project = "langfuse-local",
+      job     = "personal-llm-o11y",
+      project = "personal-llm-o11y",
     }
   }
 
@@ -58,7 +58,7 @@ otelcol.processor.transform "add_resource" {
   log_statements {
     context = "resource"
     statements = [
-      `set(attributes["service.name"], "langfuse-local")`,
+      `set(attributes["service.name"], "personal-llm-o11y")`,
     ]
   }
 
