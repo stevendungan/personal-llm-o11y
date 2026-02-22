@@ -245,9 +245,10 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
 
 4. **Verify traces** in Grafana Cloud:
    - Open your Grafana Cloud instance
-   - Go to **Explore > Tempo**
-   - Search for `service.name = claude-code-hook`
-   - Each trace has a root span "Turn N" with children "Claude Response" and "Tool: X"
+   - Go to **Drilldown > Traces** in the main menu
+   - The default filter attribute is `resource.service.name` — select **`claude-code-hook`**
+   - Use the Rate, Errors, and Duration (RED) metric tabs for an overview
+   - Drill into individual traces to see the span tree: root span "Turn N" with children "Claude Response" and "Tool: X"
 
 ### Grafana Cloud Logs Setup
 
@@ -274,9 +275,9 @@ To ship Docker container logs (Langfuse, PostgreSQL, ClickHouse, Redis, MinIO) t
 
 4. **Verify logs** in Grafana Cloud:
    - Open your Grafana Cloud instance
-   - Go to **Explore > Loki**
-   - Query: `{job="langfuse-local"}`
-   - Filter by container: `{job="langfuse-local", container="langfuse-web-1"}`
+   - Go to **Drilldown > Logs** in the main menu
+   - Search for the **`langfuse-local`** service in the service list
+   - Click **Show logs** to view entries, then use **(+) Add label** to filter by `container` (e.g. `langfuse-web-1`)
 
 If you're already running, restart with the profile:
 ```bash
