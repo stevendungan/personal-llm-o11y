@@ -35,6 +35,9 @@ try:
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
     OTEL_AVAILABLE = True
 except ImportError:
     pass
@@ -606,16 +609,24 @@ def _truncate_for_attr(value: str, max_len: int = 32000) -> str:
 
 
 class _LoggingExporter:
-    """Wraps an OTLP exporter to log export results."""
+    """Wraps an OTLP exporter to log export results (works for spans and log records)."""
 
-    def __init__(self, wrapped):
+    def __init__(self, wrapped, signal_name: str = "spans"):
         self._wrapped = wrapped
+        self._signal_name = signal_name
 
-    def export(self, spans):
-        result = self._wrapped.export(spans)
-        if result != SpanExportResult.SUCCESS:
-            span_names = [s.name for s in spans]
-            log("ERROR", f"OTLP export FAILED for spans {span_names}: {result}")
+    def export(self, items):
+        result = self._wrapped.export(items)
+        if result.value != 0:  # Works for both SpanExportResult and LogExportResult
+            names = []
+            for item in items:
+                if hasattr(item, "name"):
+                    names.append(item.name)
+                elif hasattr(item, "body"):
+                    names.append(str(item.body)[:80])
+                else:
+                    names.append("?")
+            log("ERROR", f"OTLP export FAILED for {self._signal_name} {names}: {result}")
         return result
 
     def shutdown(self):
@@ -625,39 +636,65 @@ class _LoggingExporter:
         return self._wrapped.force_flush(timeout_millis)
 
 
-def init_otel_tracer(
+def init_otel_providers(
     endpoint: str,
     instance_id: str,
     api_token: str,
 ) -> tuple:
-    """Initialize an OpenTelemetry tracer configured for Grafana Cloud OTLP.
+    """Initialize OpenTelemetry trace and log providers for Grafana Cloud OTLP.
 
-    Returns (tracer, provider) so the caller can flush/shutdown the provider.
+    Returns (tracer, trace_provider, otel_logger, log_provider).
+    The otel_logger is a Python logging.Logger bridged to the OTEL log provider;
+    log records emitted inside an active span automatically inherit trace_id/span_id.
     """
     credentials = base64.b64encode(f"{instance_id}:{api_token}".encode()).decode()
+    auth_headers = {"Authorization": f"Basic {credentials}"}
 
     resource = Resource.create({
         "service.name": "claude-code-hook",
         "service.version": "1.0.0",
     })
 
+    # --- Trace provider ---
     traces_endpoint = endpoint.rstrip("/") + "/v1/traces"
     debug(f"OTLP traces endpoint: {traces_endpoint}")
 
-    exporter = OTLPSpanExporter(
+    span_exporter = OTLPSpanExporter(
         endpoint=traces_endpoint,
-        headers={
-            "Authorization": f"Basic {credentials}",
-        },
+        headers=auth_headers,
         timeout=5,
     )
 
-    provider = TracerProvider(resource=resource)
-    provider.add_span_processor(SimpleSpanProcessor(_LoggingExporter(exporter)))
+    trace_provider = TracerProvider(resource=resource)
+    trace_provider.add_span_processor(
+        SimpleSpanProcessor(_LoggingExporter(span_exporter, signal_name="spans"))
+    )
     # Don't call set_tracer_provider() — Langfuse SDK may have already claimed it.
-    # Get the tracer directly from our provider instead.
 
-    return provider.get_tracer("claude-code-hook", "1.0.0"), provider
+    # --- Log provider ---
+    logs_endpoint = endpoint.rstrip("/") + "/v1/logs"
+    debug(f"OTLP logs endpoint: {logs_endpoint}")
+
+    log_exporter = OTLPLogExporter(
+        endpoint=logs_endpoint,
+        headers=auth_headers,
+        timeout=5,
+    )
+
+    log_provider = LoggerProvider(resource=resource)
+    log_provider.add_log_record_processor(
+        SimpleLogRecordProcessor(_LoggingExporter(log_exporter, signal_name="logs"))
+    )
+    # Don't call set_logger_provider() — same isolation reason as traces.
+
+    # Bridge a Python logger to the OTEL log provider
+    otel_log_handler = LoggingHandler(logger_provider=log_provider)
+    otel_logger = logging.getLogger("claude-code-hook.otel")
+    otel_logger.addHandler(otel_log_handler)
+    otel_logger.setLevel(logging.INFO)
+
+    tracer = trace_provider.get_tracer("claude-code-hook", "1.0.0")
+    return tracer, trace_provider, otel_logger, log_provider
 
 
 def create_otel_trace(
@@ -668,8 +705,14 @@ def create_otel_trace(
     assistant_msgs: list,
     tool_results: list,
     project_name: str = "",
+    otel_logger: "logging.Logger | None" = None,
 ) -> None:
-    """Create an OpenTelemetry trace for a single turn, mirroring the Langfuse structure."""
+    """Create an OpenTelemetry trace for a single turn, mirroring the Langfuse structure.
+
+    If otel_logger is provided, structured log records are emitted within each span
+    context so the OTEL SDK automatically attaches trace_id and span_id for
+    bidirectional log-trace correlation in Grafana Cloud.
+    """
     user_text = get_text_content(user_msg)
 
     final_output = ""
@@ -722,6 +765,13 @@ def create_otel_trace(
             "output": _truncate_for_attr(final_output),
         },
     ):
+        if otel_logger:
+            otel_logger.info(
+                "Processing turn %d", turn_num,
+                extra={"session.id": session_id, "project.name": project_name,
+                       "tool_count": len(all_tool_calls)},
+            )
+
         # Child span: "Claude Response"
         with tracer.start_as_current_span(
             name="Claude Response",
@@ -734,7 +784,11 @@ def create_otel_trace(
                 "gen_ai.request.model": model,
             },
         ):
-            pass
+            if otel_logger:
+                otel_logger.info(
+                    "LLM response from %s", model,
+                    extra={"model": model, "tool_count": len(all_tool_calls)},
+                )
 
         # Child spans: "Tool: {name}"
         for tool_call in all_tool_calls:
@@ -749,7 +803,11 @@ def create_otel_trace(
                     "tool.output": _truncate_for_attr(tool_output_str),
                 },
             ):
-                pass
+                if otel_logger:
+                    otel_logger.info(
+                        "Tool call: %s", tool_call["name"],
+                        extra={"tool.name": tool_call["name"], "tool.id": tool_call["id"]},
+                    )
 
     debug(f"Created OTEL trace for turn {turn_num}")
 
@@ -989,6 +1047,7 @@ def main():
     # Initialize available backends and build trace_creators list
     langfuse_client = None
     otel_provider = None
+    otel_log_provider = None
     trace_creators = []
 
     if langfuse_reachable:
@@ -1009,17 +1068,17 @@ def main():
 
     if grafana_reachable:
         try:
-            otel_tracer, otel_provider = init_otel_tracer(
+            otel_tracer, otel_provider, otel_logger, otel_log_provider = init_otel_providers(
                 grafana_endpoint, grafana_instance_id, grafana_api_token
             )
             trace_creators.append((
                 "grafana",
-                lambda sid, tn, um, ams, trs, pn, _t=otel_tracer: create_otel_trace(
-                    _t, sid, tn, um, ams, trs, pn
+                lambda sid, tn, um, ams, trs, pn, _t=otel_tracer, _l=otel_logger: create_otel_trace(
+                    _t, sid, tn, um, ams, trs, pn, otel_logger=_l
                 ),
             ))
         except Exception as e:
-            log("ERROR", f"Failed to initialize OTEL tracer: {e}")
+            log("ERROR", f"Failed to initialize OTEL providers: {e}")
 
     if not trace_creators:
         log("ERROR", "No backends initialized successfully")
@@ -1052,6 +1111,8 @@ def main():
             langfuse_client.flush()
         if otel_provider and hasattr(otel_provider, "force_flush"):
             otel_provider.force_flush()
+        if otel_log_provider and hasattr(otel_log_provider, "force_flush"):
+            otel_log_provider.force_flush()
 
         # Log execution time
         duration = (datetime.now() - script_start).total_seconds()
@@ -1074,6 +1135,8 @@ def main():
             langfuse_client.shutdown()
         if otel_provider and hasattr(otel_provider, "shutdown"):
             otel_provider.shutdown()
+        if otel_log_provider and hasattr(otel_log_provider, "shutdown"):
+            otel_log_provider.shutdown()
 
     sys.exit(0)
 

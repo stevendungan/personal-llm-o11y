@@ -18,7 +18,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install langfuse
+        run: pip install langfuse opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
 
       - name: Validate shell script syntax
         run: |
