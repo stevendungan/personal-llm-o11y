@@ -1,8 +1,8 @@
 # Claude Code + Langfuse: Session Observability Template
 
-Self-hosted Langfuse for capturing every Claude Code conversation — prompts, responses, tool calls, and session grouping.
+Self-hosted Langfuse for capturing every Claude Code conversation — prompts, responses, tool calls, and session grouping. Optionally export traces to **Grafana Cloud** (Tempo) via OTLP.
 
-This template provides a complete, production-ready setup for observing your Claude Code sessions using Langfuse. Everything runs locally in Docker, with automatic session tracking and incremental state management.
+This template provides a complete, production-ready setup for observing your Claude Code sessions. Everything runs locally in Docker, with automatic session tracking and incremental state management. Traces can be sent to Langfuse, Grafana Cloud, or both simultaneously.
 
 **Read the full story:** [I Built My Own Observability for Claude Code](https://doneyli.substack.com/p/i-built-my-own-observability-for) — why I built this, how it works, and screenshots of the setup in action.
 
@@ -58,6 +58,19 @@ Follow these steps to get Langfuse observability running in under 5 minutes:
    ```bash
    ./scripts/validate-setup.sh --post
    ```
+
+## After a Restart
+
+Once setup is complete, the only thing you need to do after rebooting your machine is start the Docker containers:
+
+```bash
+cd claude-code-langfuse-template
+docker compose up -d
+```
+
+Wait 30-60 seconds for all services to initialize. The hook, env vars, and credentials persist across restarts — no reconfiguration needed.
+
+If you're only using Grafana Cloud (not local Langfuse), you can skip this step entirely since there are no local services to start.
 
 ## What Gets Captured
 
@@ -118,7 +131,15 @@ The Langfuse hook runs as a Claude Code **Stop hook** — it executes after each
 │ - Parses transcript  │
 │ - Tracks state       │
 │ - Groups by session  │
-└──────┬───────────────┘
+│ - Multi-backend      │
+└──────┬──────┬────────┘
+       │      │
+       │      │ OTLP/HTTP (optional)
+       │      ▼
+       │  ┌──────────────────────┐
+       │  │ Grafana Cloud        │
+       │  │ (Tempo via OTLP)     │
+       │  └──────────────────────┘
        │
        │ HTTP POST
        ▼
@@ -139,8 +160,10 @@ The Langfuse hook runs as a Claude Code **Stop hook** — it executes after each
 - **Incremental state tracking**: Only processes new messages since last run
 - **Session grouping**: All turns in a conversation are linked by session ID
 - **Tool call tracking**: Each tool invocation is captured as a span with input/output
+- **Grafana Cloud export**: Optionally send traces to Grafana Cloud Tempo via OTLP
+- **Dual-backend support**: Send to Langfuse, Grafana Cloud, or both — each backend is independently fenced
 - **Graceful failure**: Errors are logged but don't interrupt Claude Code
-- **Opt-in by default**: Only runs when `TRACE_TO_LANGFUSE=true`
+- **Opt-in by default**: Only runs when `TRACE_TO_LANGFUSE=true` and/or `TRACE_TO_GRAFANA=true`
 
 ## Configuration
 
@@ -166,11 +189,55 @@ See `settings-examples/project-opt-out.json` for a complete example.
 
 All configuration is managed through environment variables in `~/.claude/settings.json`:
 
-- `TRACE_TO_LANGFUSE`: Enable/disable tracing (`true` or `false`)
+**Langfuse (local):**
+
+- `TRACE_TO_LANGFUSE`: Enable/disable Langfuse tracing (`true` or `false`)
 - `LANGFUSE_PUBLIC_KEY`: Project public key (auto-generated)
 - `LANGFUSE_SECRET_KEY`: Project secret key (auto-generated)
 - `LANGFUSE_HOST`: Langfuse URL (default: `http://localhost:3050`)
 - `CC_LANGFUSE_DEBUG`: Enable debug logging (`true` or `false`)
+
+**Grafana Cloud (optional):**
+
+- `TRACE_TO_GRAFANA`: Enable/disable Grafana Cloud export (`true` or `false`)
+- `GRAFANA_OTLP_ENDPOINT`: OTLP gateway URL (e.g. `https://otlp-gateway-prod-us-central-0.grafana.net/otlp`)
+- `GRAFANA_INSTANCE_ID`: Numeric instance ID (used as basic auth username)
+- `GRAFANA_API_TOKEN`: API token with `traces:write` scope
+
+Both backends can be enabled simultaneously. Each is independently health-checked and fenced — if one is unavailable, the other continues working.
+
+### Grafana Cloud Setup
+
+To export traces to Grafana Cloud (Tempo) in addition to or instead of local Langfuse:
+
+1. **Get your OTLP credentials** from the Grafana Cloud portal:
+   - Log in at [grafana.com](https://grafana.com) and navigate to your stack
+   - Go to **Connections > OpenTelemetry** (or the Tempo section)
+   - Copy the **OTLP endpoint** and **Instance ID**
+   - Generate an **API token** with `traces:write` scope
+
+2. **Add the env vars** to `~/.claude/settings.json`:
+   ```json
+   {
+     "env": {
+       "TRACE_TO_GRAFANA": "true",
+       "GRAFANA_OTLP_ENDPOINT": "https://otlp-gateway-prod-us-central-0.grafana.net/otlp",
+       "GRAFANA_INSTANCE_ID": "123456",
+       "GRAFANA_API_TOKEN": "glc_eyJ..."
+     }
+   }
+   ```
+
+3. **Install OpenTelemetry packages** (included automatically if you ran `install-hook.sh`):
+   ```bash
+   ~/.claude/hooks/venv/bin/pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+   ```
+
+4. **Verify traces** in Grafana Cloud:
+   - Open your Grafana Cloud instance
+   - Go to **Explore > Tempo**
+   - Search for `service.name = claude-code-hook`
+   - Each trace has a root span "Turn N" with children "Claude Response" and "Tool: X"
 
 ### Customization
 
@@ -387,16 +454,18 @@ docker compose up -d
 2. After assistant response, Stop hook triggers
 3. Hook reads new messages since last execution (tracked in state file)
 4. Hook groups messages into turns (user → assistant → tools → assistant)
-5. Each turn becomes a Langfuse trace with nested spans for tool calls
-6. Langfuse API validates and stores in PostgreSQL
-7. Background worker processes for ClickHouse analytics
+5. Each turn is dispatched to all enabled backends:
+   - **Langfuse**: Creates traces with nested spans via the Langfuse SDK
+   - **Grafana Cloud**: Creates OTEL spans exported via OTLP/HTTP to Tempo
+6. If no backends are reachable, traces are queued locally and drained on the next successful connection
 
 ### Security
 
-- All services run on `localhost` (not exposed to network)
+- All Docker services run on `localhost` (not exposed to network)
 - Credentials are generated randomly on first setup
 - `.env` file is git-ignored (never commit credentials)
-- No telemetry is sent to external services (Langfuse self-hosted)
+- Langfuse is fully self-hosted with no external telemetry
+- Grafana Cloud export (if enabled) sends traces to your Grafana Cloud instance over HTTPS with Basic auth — no data is sent externally unless you explicitly enable `TRACE_TO_GRAFANA=true`
 
 ## Customization Ideas
 
@@ -465,6 +534,8 @@ MIT License - see LICENSE file for details.
 ## Credits
 
 - [Langfuse](https://langfuse.com/) - Open-source LLM observability
+- [Grafana Cloud](https://grafana.com/products/cloud/) - Observability platform (Tempo for distributed tracing)
+- [OpenTelemetry](https://opentelemetry.io/) - Vendor-neutral observability framework
 - [Anthropic Claude](https://claude.ai/) - AI assistant platform
 
 ---
