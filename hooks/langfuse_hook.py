@@ -77,11 +77,14 @@ def check_langfuse_health(host: str) -> bool:
             host_part = host
             default_port = 443
 
+        # Strip path component (e.g. /otlp from gateway URLs)
+        host_part = host_part.split("/")[0]
+
         if ":" in host_part:
             hostname, port_str = host_part.split(":", 1)
-            port = int(port_str.rstrip("/"))
+            port = int(port_str)
         else:
-            hostname = host_part.rstrip("/")
+            hostname = host_part
             port = default_port
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
