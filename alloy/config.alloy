@@ -1,5 +1,5 @@
 // Grafana Alloy configuration for collecting Docker container logs
-// and shipping them to Grafana Cloud Loki.
+// and shipping them to Grafana Cloud via OTLP.
 
 discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
@@ -33,7 +33,6 @@ loki.source.docker "containers" {
 }
 
 loki.process "containers" {
-  // Add static labels for easier filtering in Grafana Cloud
   stage.static_labels {
     values = {
       job     = "langfuse-local",
@@ -41,16 +40,48 @@ loki.process "containers" {
     }
   }
 
-  forward_to = [loki.write.grafana_cloud.receiver]
+  forward_to = [otelcol.receiver.loki.containers.receiver]
 }
 
-loki.write "grafana_cloud" {
-  endpoint {
-    url = env("GRAFANA_LOKI_URL")
+// Convert Loki log entries to OTLP format
+otelcol.receiver.loki "containers" {
+  output {
+    logs = [otelcol.processor.transform.add_resource.input]
+  }
+}
 
-    basic_auth {
-      username = env("GRAFANA_LOKI_USERNAME")
-      password = env("GRAFANA_LOKI_PASSWORD")
-    }
+// Set service.name so logs are discoverable in Grafana Cloud Loki.
+// OTLP-ingested logs only promote service_name as a default index label.
+otelcol.processor.transform "add_resource" {
+  error_mode = "ignore"
+
+  log_statements {
+    context = "resource"
+    statements = [
+      `set(attributes["service.name"], "langfuse-local")`,
+    ]
+  }
+
+  output {
+    logs = [otelcol.exporter.otlphttp.grafana_cloud.input]
+  }
+}
+
+// Authenticate with Grafana Cloud OTLP gateway
+otelcol.auth.basic "grafana_cloud" {
+  username = env("GRAFANA_OTLP_INSTANCE_ID")
+  password = env("GRAFANA_OTLP_TOKEN")
+}
+
+// Export logs via OTLP/HTTP to Grafana Cloud
+otelcol.exporter.otlphttp "grafana_cloud" {
+  client {
+    endpoint = env("GRAFANA_OTLP_ENDPOINT")
+    auth     = otelcol.auth.basic.grafana_cloud.handler
+  }
+
+  sending_queue {
+    enabled    = true
+    queue_size = 5000
   }
 }

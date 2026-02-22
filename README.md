@@ -154,7 +154,7 @@ The Langfuse hook runs as a Claude Code **Stop hook** — it executes after each
        ▼                        ▼
 ┌──────────────────────────┐  ┌──────────────────────┐
 │ PostgreSQL + ClickHouse  │  │ Grafana Cloud        │
-│ (traces, analytics)      │  │ (Loki via push API)  │
+│ (traces, analytics)      │  │ (Loki via OTLP)      │
 └──────────────────────────┘  └──────────────────────┘
 ```
 
@@ -210,9 +210,9 @@ All configuration is managed through environment variables in `~/.claude/setting
 
 **Grafana Cloud Logs (optional, Docker Compose only):**
 
-- `GRAFANA_LOKI_URL`: Loki push URL (e.g. `https://logs-prod-us-central1.grafana.net/loki/api/v1/push`)
-- `GRAFANA_LOKI_USERNAME`: Loki instance ID (used as basic auth username)
-- `GRAFANA_LOKI_PASSWORD`: API token with `logs:write` scope
+- `GRAFANA_OTLP_ENDPOINT`: OTLP gateway URL (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`)
+- `GRAFANA_OTLP_INSTANCE_ID`: OTLP instance ID (used as basic auth username)
+- `GRAFANA_OTLP_TOKEN`: API token with `logs:write` scope
 
 Both trace backends can be enabled simultaneously. Each is independently health-checked and fenced — if one is unavailable, the other continues working.
 
@@ -253,16 +253,17 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
 
 To ship Docker container logs (Langfuse, PostgreSQL, ClickHouse, Redis, MinIO) to Grafana Cloud Loki:
 
-1. **Get your Loki credentials** from the Grafana Cloud portal:
+1. **Get your OTLP credentials** from the Grafana Cloud portal:
    - Log in at [grafana.com](https://grafana.com) and navigate to your stack
-   - Go to **Connections > Hosted Logs** (or the Loki section)
-   - Copy the **URL**, **User** (instance ID), and generate an **API token** with `logs:write` scope
+   - Go to **Connections > OpenTelemetry**
+   - Copy the **OTLP endpoint** and **Instance ID**
+   - Generate an **API token** with `logs:write` scope (can reuse your traces token if it has both scopes)
 
 2. **Add the env vars** to your `.env` file:
    ```
-   GRAFANA_LOKI_URL=https://logs-prod-us-central1.grafana.net/loki/api/v1/push
-   GRAFANA_LOKI_USERNAME=123456
-   GRAFANA_LOKI_PASSWORD=glc_eyJ...
+   GRAFANA_OTLP_ENDPOINT=https://otlp-gateway-prod-us-east-0.grafana.net/otlp
+   GRAFANA_OTLP_INSTANCE_ID=123456
+   GRAFANA_OTLP_TOKEN=glc_eyJ...
    ```
 
 3. **Start services with the `logs` profile**:
