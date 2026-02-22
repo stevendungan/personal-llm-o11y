@@ -7,7 +7,8 @@
     "TRACE_TO_GRAFANA": "false",
     "GRAFANA_OTLP_ENDPOINT": "https://otlp-gateway-prod-us-central-0.grafana.net/otlp",
     "GRAFANA_INSTANCE_ID": "YOUR_INSTANCE_ID",
-    "GRAFANA_API_TOKEN": "YOUR_API_TOKEN"
+    "GRAFANA_WRITE_TOKEN": "YOUR_WRITE_TOKEN",
+    "GRAFANA_READ_TOKEN": "YOUR_READ_TOKEN"
   },
   "hooks": {
     "Stop": [

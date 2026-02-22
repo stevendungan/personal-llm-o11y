@@ -144,7 +144,8 @@ settings["env"]["LANGFUSE_HOST"] = "http://localhost:3050"
 settings["env"].setdefault("TRACE_TO_GRAFANA", "false")
 settings["env"].setdefault("GRAFANA_OTLP_ENDPOINT", "")
 settings["env"].setdefault("GRAFANA_INSTANCE_ID", "")
-settings["env"].setdefault("GRAFANA_API_TOKEN", "")
+settings["env"].setdefault("GRAFANA_WRITE_TOKEN", "")
+settings["env"].setdefault("GRAFANA_READ_TOKEN", "")
 
 # Add Stop hook if not already present
 if "Stop" not in settings["hooks"]:

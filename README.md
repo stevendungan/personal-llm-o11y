@@ -206,7 +206,8 @@ All configuration is managed through environment variables in `~/.claude/setting
 - `TRACE_TO_GRAFANA`: Enable/disable Grafana Cloud export (`true` or `false`)
 - `GRAFANA_OTLP_ENDPOINT`: OTLP gateway URL (e.g. `https://otlp-gateway-prod-us-central-0.grafana.net/otlp`)
 - `GRAFANA_INSTANCE_ID`: Numeric instance ID (used as basic auth username)
-- `GRAFANA_API_TOKEN`: API token with `traces:write` scope
+- `GRAFANA_WRITE_TOKEN`: API token with `traces:write` scope
+- `GRAFANA_READ_TOKEN`: API token with `traces:read` scope (for querying Tempo)
 
 **Grafana Cloud Logs (optional, Docker Compose only):**
 
@@ -224,7 +225,8 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
    - Log in at [grafana.com](https://grafana.com) and navigate to your stack
    - Go to **Connections > OpenTelemetry** (or the Tempo section)
    - Copy the **OTLP endpoint** and **Instance ID**
-   - Generate an **API token** with `traces:write` scope
+   - Generate an **API token** with `traces:write` scope (write policy)
+   - Optionally generate an **API token** with `traces:read` scope (read policy) for querying traces
 
 2. **Add the env vars** to `~/.claude/settings.json`:
    ```json
@@ -233,7 +235,8 @@ To export traces to Grafana Cloud (Tempo) in addition to or instead of local Lan
        "TRACE_TO_GRAFANA": "true",
        "GRAFANA_OTLP_ENDPOINT": "https://otlp-gateway-prod-us-central-0.grafana.net/otlp",
        "GRAFANA_INSTANCE_ID": "123456",
-       "GRAFANA_API_TOKEN": "glc_eyJ..."
+       "GRAFANA_WRITE_TOKEN": "glc_eyJ...",
+       "GRAFANA_READ_TOKEN": "glc_eyJ..."
      }
    }
    ```

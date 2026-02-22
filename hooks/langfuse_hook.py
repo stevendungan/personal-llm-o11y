@@ -980,9 +980,9 @@ def main():
         else:
             grafana_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
             grafana_instance_id = os.environ.get("GRAFANA_INSTANCE_ID")
-            grafana_api_token = os.environ.get("GRAFANA_API_TOKEN")
+            grafana_api_token = os.environ.get("GRAFANA_WRITE_TOKEN") or os.environ.get("GRAFANA_API_TOKEN")
             if not grafana_endpoint or not grafana_instance_id or not grafana_api_token:
-                log("ERROR", "Grafana OTLP credentials not set (GRAFANA_OTLP_ENDPOINT, GRAFANA_INSTANCE_ID, GRAFANA_API_TOKEN)")
+                log("ERROR", "Grafana OTLP credentials not set (GRAFANA_OTLP_ENDPOINT, GRAFANA_INSTANCE_ID, GRAFANA_WRITE_TOKEN)")
                 grafana_enabled = False
 
     if not langfuse_enabled and not grafana_enabled:
