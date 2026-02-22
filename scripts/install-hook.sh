@@ -59,23 +59,30 @@ if [ -z "$PYTHON" ]; then
     exit 1
 fi
 
-# Install langfuse package
-echo ""
-echo "Installing langfuse Python package..."
-$PYTHON -m pip install --quiet --upgrade pip
-$PYTHON -m pip install --quiet langfuse
-
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Installed langfuse package${NC}"
-else
-    echo -e "${RED}Error: Failed to install langfuse package${NC}"
-    exit 1
-fi
-
 # Create hooks directory
 HOOKS_DIR="$HOME/.claude/hooks"
 mkdir -p "$HOOKS_DIR"
 echo -e "${GREEN}✓ Created hooks directory: $HOOKS_DIR${NC}"
+
+# Create virtual environment and install langfuse
+VENV_DIR="$HOOKS_DIR/venv"
+echo ""
+echo "Creating virtual environment at $VENV_DIR..."
+$PYTHON -m venv "$VENV_DIR"
+echo -e "${GREEN}✓ Created virtual environment${NC}"
+
+VENV_PYTHON="$VENV_DIR/bin/python"
+
+echo "Installing Python packages..."
+"$VENV_PYTHON" -m pip install --quiet --upgrade pip
+"$VENV_PYTHON" -m pip install --quiet langfuse opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✓ Installed langfuse and opentelemetry packages${NC}"
+else
+    echo -e "${RED}Error: Failed to install Python packages${NC}"
+    exit 1
+fi
 
 # Copy hook script
 HOOK_SOURCE="hooks/langfuse_hook.py"
@@ -112,6 +119,7 @@ fi
 SETTINGS_CONTENT=$(cat "$SETTINGS_FILE")
 
 # Use Python to update JSON (more reliable than jq)
+VENV_PYTHON_ABS="$VENV_PYTHON"
 $PYTHON << EOF
 import json
 import sys
@@ -126,18 +134,24 @@ if "env" not in settings:
 if "hooks" not in settings:
     settings["hooks"] = {}
 
-# Add environment variables
+# Add Langfuse environment variables
 settings["env"]["TRACE_TO_LANGFUSE"] = "true"
 settings["env"]["LANGFUSE_PUBLIC_KEY"] = "$LANGFUSE_INIT_PROJECT_PUBLIC_KEY"
 settings["env"]["LANGFUSE_SECRET_KEY"] = "$LANGFUSE_INIT_PROJECT_SECRET_KEY"
 settings["env"]["LANGFUSE_HOST"] = "http://localhost:3050"
+
+# Add Grafana Cloud environment variables (disabled by default)
+settings["env"].setdefault("TRACE_TO_GRAFANA", "false")
+settings["env"].setdefault("GRAFANA_OTLP_ENDPOINT", "")
+settings["env"].setdefault("GRAFANA_INSTANCE_ID", "")
+settings["env"].setdefault("GRAFANA_API_TOKEN", "")
 
 # Add Stop hook if not already present
 if "Stop" not in settings["hooks"]:
     settings["hooks"]["Stop"] = []
 
 # Check if hook already registered
-hook_command = "$PYTHON $HOOK_DEST"
+hook_command = "$VENV_PYTHON_ABS $HOOK_DEST"
 hook_exists = False
 for hook_group in settings["hooks"]["Stop"]:
     if "hooks" in hook_group:
@@ -192,7 +206,7 @@ echo ""
 echo "Debug commands:"
 echo "  View hook logs: tail -f ~/.claude/state/langfuse_hook.log"
 echo "  Enable debug mode: Add CC_LANGFUSE_DEBUG=true to env in settings.json"
-echo "  Test hook manually: $PYTHON $HOOK_DEST"
+echo "  Test hook manually: $VENV_PYTHON $HOOK_DEST"
 echo ""
 echo -e "${GREEN}Happy tracing!${NC}"
 echo ""

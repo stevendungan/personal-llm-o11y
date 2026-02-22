@@ -1,14 +1,15 @@
 #!/usr/bin/env python3.12
 """
-Sends Claude Code traces to Langfuse after each response.
+Sends Claude Code traces to Langfuse and/or Grafana Cloud after each response.
 
 Hook type: Stop (runs after each assistant response)
-Opt-in: Only runs when TRACE_TO_LANGFUSE=true is set in project settings.
+Opt-in: Only runs when TRACE_TO_LANGFUSE=true and/or TRACE_TO_GRAFANA=true.
 
-Resilience: If Langfuse is unavailable, traces are queued locally and
+Resilience: If backends are unavailable, traces are queued locally and
 automatically drained on the next successful connection.
 """
 
+import base64
 import json
 import os
 import sys
@@ -18,11 +19,24 @@ from typing import Any
 import socket
 
 # Check if Langfuse is available
+LANGFUSE_AVAILABLE = False
 try:
     from langfuse import Langfuse
+    LANGFUSE_AVAILABLE = True
 except ImportError:
-    print("Error: langfuse package not installed. Run: pip install langfuse", file=sys.stderr)
-    sys.exit(0)
+    pass
+
+# Check if OpenTelemetry is available
+OTEL_AVAILABLE = False
+try:
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    OTEL_AVAILABLE = True
+except ImportError:
+    pass
 
 # Configuration
 LOG_FILE = Path.home() / ".claude" / "state" / "langfuse_hook.log"
@@ -118,30 +132,32 @@ def clear_queue() -> None:
         debug("Queue cleared")
 
 
-def drain_queue(langfuse: Langfuse) -> int:
-    """Drain all queued traces to Langfuse. Returns count of drained traces."""
+def drain_queue(trace_creators: list) -> int:
+    """Drain all queued traces to all enabled backends. Returns count of drained traces."""
     traces = load_queued_traces()
     if not traces:
         return 0
 
-    log("INFO", f"Draining {len(traces)} queued traces to Langfuse")
+    log("INFO", f"Draining {len(traces)} queued traces")
 
     drained = 0
     for trace_data in traces:
         try:
-            create_trace(
-                langfuse=langfuse,
-                session_id=trace_data["session_id"],
-                turn_num=trace_data["turn_num"],
-                user_msg=trace_data["user_msg"],
-                assistant_msgs=trace_data["assistant_msgs"],
-                tool_results=trace_data["tool_results"],
-                project_name=trace_data.get("project_name", ""),
-            )
+            for creator_name, creator_fn in trace_creators:
+                try:
+                    creator_fn(
+                        session_id=trace_data["session_id"],
+                        turn_num=trace_data["turn_num"],
+                        user_msg=trace_data["user_msg"],
+                        assistant_msgs=trace_data["assistant_msgs"],
+                        tool_results=trace_data["tool_results"],
+                        project_name=trace_data.get("project_name", ""),
+                    )
+                except Exception as e:
+                    log("ERROR", f"Failed to drain trace to {creator_name}: {e}")
             drained += 1
         except Exception as e:
             log("ERROR", f"Failed to drain trace: {e}")
-            # If we fail mid-drain, rewrite remaining traces and exit
             remaining = traces[drained:]
             clear_queue()
             for remaining_trace in remaining:
@@ -564,8 +580,141 @@ def create_trace(
     debug(f"Created trace for turn {turn_num}")
 
 
-def process_transcript(langfuse: Langfuse, session_id: str, transcript_file: Path, state: dict, project_name: str = "") -> int:
-    """Process a transcript file and create traces for new turns."""
+def _truncate_for_attr(value: str, max_len: int = 32000) -> str:
+    """Truncate a string value for use as an OTEL span attribute."""
+    if len(value) <= max_len:
+        return value
+    return value[:max_len] + f"... [truncated, {len(value)} chars total]"
+
+
+def init_otel_tracer(
+    endpoint: str,
+    instance_id: str,
+    api_token: str,
+) -> "otel_trace.Tracer":
+    """Initialize an OpenTelemetry tracer configured for Grafana Cloud OTLP."""
+    credentials = base64.b64encode(f"{instance_id}:{api_token}".encode()).decode()
+
+    resource = Resource.create({
+        "service.name": "claude-code-hook",
+        "service.version": "1.0.0",
+    })
+
+    traces_endpoint = endpoint.rstrip("/") + "/v1/traces"
+
+    exporter = OTLPSpanExporter(
+        endpoint=traces_endpoint,
+        headers={
+            "Authorization": f"Basic {credentials}",
+        },
+        timeout=5,
+    )
+
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    otel_trace.set_tracer_provider(provider)
+
+    return otel_trace.get_tracer("claude-code-hook", "1.0.0")
+
+
+def create_otel_trace(
+    tracer: "otel_trace.Tracer",
+    session_id: str,
+    turn_num: int,
+    user_msg: dict,
+    assistant_msgs: list,
+    tool_results: list,
+    project_name: str = "",
+) -> None:
+    """Create an OpenTelemetry trace for a single turn, mirroring the Langfuse structure."""
+    user_text = get_text_content(user_msg)
+
+    final_output = ""
+    if assistant_msgs:
+        final_output = get_text_content(assistant_msgs[-1])
+
+    model = "claude"
+    if assistant_msgs and isinstance(assistant_msgs[0], dict) and "message" in assistant_msgs[0]:
+        model = assistant_msgs[0]["message"].get("model", "claude")
+
+    # Collect tool calls (same logic as create_trace)
+    all_tool_calls = []
+    for assistant_msg in assistant_msgs:
+        tool_calls = get_tool_calls(assistant_msg)
+        for tool_call in tool_calls:
+            tool_name = tool_call.get("name", "unknown")
+            tool_input = tool_call.get("input", {})
+            tool_id = tool_call.get("id", "")
+
+            tool_output = None
+            for tr in tool_results:
+                tr_content = get_content(tr)
+                if isinstance(tr_content, list):
+                    for item in tr_content:
+                        if isinstance(item, dict) and item.get("tool_use_id") == tool_id:
+                            tool_output = item.get("content")
+                            break
+
+            all_tool_calls.append({
+                "name": tool_name,
+                "input": tool_input,
+                "output": tool_output,
+                "id": tool_id,
+            })
+
+    tags = ["claude-code"]
+    if project_name:
+        tags.append(project_name)
+
+    # Root span: "Turn {n}"
+    with tracer.start_as_current_span(
+        name=f"Turn {turn_num}",
+        attributes={
+            "session.id": session_id,
+            "turn.number": turn_num,
+            "project.name": project_name,
+            "source": "claude-code",
+            "tags": json.dumps(tags),
+            "input": _truncate_for_attr(user_text),
+            "output": _truncate_for_attr(final_output),
+        },
+    ):
+        # Child span: "Claude Response"
+        with tracer.start_as_current_span(
+            name="Claude Response",
+            attributes={
+                "llm.model": model,
+                "llm.input": _truncate_for_attr(user_text),
+                "llm.output": _truncate_for_attr(final_output),
+                "llm.tool_count": len(all_tool_calls),
+                "gen_ai.system": "anthropic",
+                "gen_ai.request.model": model,
+            },
+        ):
+            pass
+
+        # Child spans: "Tool: {name}"
+        for tool_call in all_tool_calls:
+            tool_input_str = json.dumps(tool_call["input"]) if isinstance(tool_call["input"], dict) else str(tool_call["input"])
+            tool_output_str = str(tool_call["output"]) if tool_call["output"] else ""
+            with tracer.start_as_current_span(
+                name=f"Tool: {tool_call['name']}",
+                attributes={
+                    "tool.name": tool_call["name"],
+                    "tool.id": tool_call["id"],
+                    "tool.input": _truncate_for_attr(tool_input_str),
+                    "tool.output": _truncate_for_attr(tool_output_str),
+                },
+            ):
+                pass
+
+    debug(f"Created OTEL trace for turn {turn_num}")
+
+
+def process_transcript(session_id: str, transcript_file: Path, state: dict, project_name: str = "", trace_creators: list = None) -> int:
+    """Process a transcript file and create traces for new turns via all enabled backends."""
+    if trace_creators is None:
+        trace_creators = []
     # Get previous state for this session
     session_state = state.get(session_id, {})
     last_line = session_state.get("last_line", 0)
@@ -620,7 +769,11 @@ def process_transcript(langfuse: Langfuse, session_id: str, transcript_file: Pat
             if current_user and current_assistants:
                 turns += 1
                 turn_num = turn_count + turns
-                create_trace(langfuse, session_id, turn_num, current_user, current_assistants, current_tool_results, project_name)
+                for creator_name, creator_fn in trace_creators:
+                    try:
+                        creator_fn(session_id, turn_num, current_user, current_assistants, current_tool_results, project_name)
+                    except Exception as e:
+                        log("ERROR", f"Failed to create {creator_name} trace for turn {turn_num}: {e}")
 
             # Start new turn
             current_user = msg
@@ -658,7 +811,11 @@ def process_transcript(langfuse: Langfuse, session_id: str, transcript_file: Pat
     if current_user and current_assistants:
         turns += 1
         turn_num = turn_count + turns
-        create_trace(langfuse, session_id, turn_num, current_user, current_assistants, current_tool_results, project_name)
+        for creator_name, creator_fn in trace_creators:
+            try:
+                creator_fn(session_id, turn_num, current_user, current_assistants, current_tool_results, project_name)
+            except Exception as e:
+                log("ERROR", f"Failed to create {creator_name} trace for turn {turn_num}: {e}")
 
     # Update state
     state[session_id] = {
@@ -675,18 +832,44 @@ def main():
     script_start = datetime.now()
     debug("Hook started")
 
-    # Check if tracing is enabled
-    if os.environ.get("TRACE_TO_LANGFUSE", "").lower() != "true":
-        debug("Tracing disabled (TRACE_TO_LANGFUSE != true)")
+    # Determine which backends are enabled
+    langfuse_enabled = os.environ.get("TRACE_TO_LANGFUSE", "").lower() == "true"
+    grafana_enabled = os.environ.get("TRACE_TO_GRAFANA", "").lower() == "true"
+
+    if not langfuse_enabled and not grafana_enabled:
+        debug("No tracing backends enabled")
         sys.exit(0)
 
-    # Check for required environment variables
-    public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("CC_LANGFUSE_SECRET_KEY") or os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("CC_LANGFUSE_HOST") or os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    # Validate Langfuse config
+    public_key = secret_key = langfuse_host = None
+    if langfuse_enabled:
+        if not LANGFUSE_AVAILABLE:
+            log("ERROR", "TRACE_TO_LANGFUSE=true but langfuse package not installed")
+            langfuse_enabled = False
+        else:
+            public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get("LANGFUSE_PUBLIC_KEY")
+            secret_key = os.environ.get("CC_LANGFUSE_SECRET_KEY") or os.environ.get("LANGFUSE_SECRET_KEY")
+            langfuse_host = os.environ.get("CC_LANGFUSE_HOST") or os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
+            if not public_key or not secret_key:
+                log("ERROR", "Langfuse API keys not set")
+                langfuse_enabled = False
 
-    if not public_key or not secret_key:
-        log("ERROR", "Langfuse API keys not set (CC_LANGFUSE_PUBLIC_KEY / CC_LANGFUSE_SECRET_KEY)")
+    # Validate Grafana config
+    grafana_endpoint = grafana_instance_id = grafana_api_token = None
+    if grafana_enabled:
+        if not OTEL_AVAILABLE:
+            log("ERROR", "TRACE_TO_GRAFANA=true but opentelemetry packages not installed")
+            grafana_enabled = False
+        else:
+            grafana_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT")
+            grafana_instance_id = os.environ.get("GRAFANA_INSTANCE_ID")
+            grafana_api_token = os.environ.get("GRAFANA_API_TOKEN")
+            if not grafana_endpoint or not grafana_instance_id or not grafana_api_token:
+                log("ERROR", "Grafana OTLP credentials not set (GRAFANA_OTLP_ENDPOINT, GRAFANA_INSTANCE_ID, GRAFANA_API_TOKEN)")
+                grafana_enabled = False
+
+    if not langfuse_enabled and not grafana_enabled:
+        log("ERROR", "All tracing backends failed configuration validation")
         sys.exit(0)
 
     # Load state
@@ -701,21 +884,30 @@ def main():
 
     debug(f"Found {len(modified_transcripts)} modified session(s) to process")
 
-    # Check if Langfuse is reachable
-    langfuse_available = check_langfuse_health(host)
+    # Health-check each backend independently
+    langfuse_reachable = False
+    grafana_reachable = False
 
-    if not langfuse_available:
-        # Queue all modified sessions
-        log("WARN", f"Langfuse unavailable at {host}, queuing traces locally")
+    if langfuse_enabled:
+        langfuse_reachable = check_langfuse_health(langfuse_host)
+        if not langfuse_reachable:
+            log("WARN", f"Langfuse unavailable at {langfuse_host}")
+
+    if grafana_enabled:
+        grafana_reachable = check_langfuse_health(grafana_endpoint)
+        if not grafana_reachable:
+            log("WARN", f"Grafana OTLP unavailable at {grafana_endpoint}")
+
+    # If no backends reachable, queue everything
+    if not langfuse_reachable and not grafana_reachable:
+        log("WARN", "No backends reachable, queuing traces locally")
 
         total_turns_queued = 0
         for session_id, transcript_file, project_name in modified_transcripts:
-            # Get previous state for this session
             session_state = state.get(session_id, {})
             last_line = session_state.get("last_line", 0)
             turn_count = session_state.get("turn_count", 0)
 
-            # Read transcript
             try:
                 lines = transcript_file.read_text().strip().split("\n")
                 total_lines = len(lines)
@@ -723,7 +915,6 @@ def main():
                 if last_line >= total_lines:
                     continue
 
-                # Parse new messages and queue turns
                 new_messages = []
                 for i in range(last_line, total_lines):
                     try:
@@ -738,7 +929,6 @@ def main():
                     )
                     total_turns_queued += turns_queued
 
-                    # Update state even when queuing
                     state[session_id] = {
                         "last_line": total_lines,
                         "turn_count": turn_count + turns_queued,
@@ -753,28 +943,60 @@ def main():
         log("INFO", f"Queued {total_turns_queued} turns from {len(modified_transcripts)} sessions in {duration:.1f}s")
         sys.exit(0)
 
-    # Langfuse is available - initialize client
-    try:
-        langfuse = Langfuse(
-            public_key=public_key,
-            secret_key=secret_key,
-            host=host,
-        )
-    except Exception as e:
-        log("ERROR", f"Failed to initialize Langfuse client: {e}")
+    # Initialize available backends and build trace_creators list
+    langfuse_client = None
+    otel_provider = None
+    trace_creators = []
+
+    if langfuse_reachable:
+        try:
+            langfuse_client = Langfuse(
+                public_key=public_key,
+                secret_key=secret_key,
+                host=langfuse_host,
+            )
+            trace_creators.append((
+                "langfuse",
+                lambda sid, tn, um, ams, trs, pn, _lf=langfuse_client: create_trace(
+                    _lf, sid, tn, um, ams, trs, pn
+                ),
+            ))
+        except Exception as e:
+            log("ERROR", f"Failed to initialize Langfuse: {e}")
+
+    if grafana_reachable:
+        try:
+            otel_tracer = init_otel_tracer(
+                grafana_endpoint, grafana_instance_id, grafana_api_token
+            )
+            otel_provider = otel_trace.get_tracer_provider()
+            trace_creators.append((
+                "grafana",
+                lambda sid, tn, um, ams, trs, pn, _t=otel_tracer: create_otel_trace(
+                    _t, sid, tn, um, ams, trs, pn
+                ),
+            ))
+        except Exception as e:
+            log("ERROR", f"Failed to initialize OTEL tracer: {e}")
+
+    if not trace_creators:
+        log("ERROR", "No backends initialized successfully")
         sys.exit(0)
 
     try:
-        # First, drain any queued traces
-        drained = drain_queue(langfuse)
-        if drained > 0:
-            langfuse.flush()
+        # Drain any queued traces to all available backends
+        drained = drain_queue(trace_creators)
+        if drained > 0 and langfuse_client:
+            langfuse_client.flush()
 
         # Process all modified transcripts
         total_turns = 0
         for session_id, transcript_file, project_name in modified_transcripts:
             try:
-                turns = process_transcript(langfuse, session_id, transcript_file, state, project_name)
+                turns = process_transcript(
+                    session_id, transcript_file, state, project_name,
+                    trace_creators=trace_creators,
+                )
                 total_turns += turns
                 debug(f"Processed {turns} turns from session {session_id}")
             except Exception as e:
@@ -783,12 +1005,20 @@ def main():
                 debug(traceback.format_exc())
                 continue
 
-        # Flush to ensure all data is sent
-        langfuse.flush()
+        # Flush all backends
+        if langfuse_client:
+            langfuse_client.flush()
+        if otel_provider and hasattr(otel_provider, "force_flush"):
+            otel_provider.force_flush()
 
         # Log execution time
         duration = (datetime.now() - script_start).total_seconds()
-        log("INFO", f"Processed {total_turns} turns from {len(modified_transcripts)} sessions (drained {drained} from queue) in {duration:.1f}s")
+        backends = []
+        if langfuse_reachable and langfuse_client:
+            backends.append("langfuse")
+        if grafana_reachable and otel_provider:
+            backends.append("grafana")
+        log("INFO", f"Processed {total_turns} turns to [{', '.join(backends)}] from {len(modified_transcripts)} sessions (drained {drained} from queue) in {duration:.1f}s")
 
         if duration > 180:
             log("WARN", f"Hook took {duration:.1f}s (>3min), consider optimizing")
@@ -798,7 +1028,10 @@ def main():
         import traceback
         debug(traceback.format_exc())
     finally:
-        langfuse.shutdown()
+        if langfuse_client:
+            langfuse_client.shutdown()
+        if otel_provider and hasattr(otel_provider, "shutdown"):
+            otel_provider.shutdown()
 
     sys.exit(0)
 
