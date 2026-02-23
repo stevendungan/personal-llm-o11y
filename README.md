@@ -557,6 +557,7 @@ metadata={
 | Priority | Item |
 |----------|------|
 | **High** | Clean sensitive data before writing to Tempo/Loki |
+| Medium | Send telemetry through Alloy collector instead of direct OTLP export |
 | Medium | Create metrics from traces |
 | Medium | Track dollar cost of Claude Code calls |
 
