@@ -561,6 +561,18 @@ metadata={
 | Medium | Create metrics from traces |
 | Medium | Track dollar cost of Claude Code calls |
 
+### LLM O11y Roadmap Discovery
+
+Things we want to be able to see and analyze with this observability setup:
+
+- See duration from when input is entered to when output returns
+- See subactivity and trace spans and/or logs
+- Analyze what % of tokens goes to what tasks
+- Analyze what % of spend goes to what tasks
+- Analyze expensive calls
+- Analyze repeated asks that can be made into skills or subagents
+- Analyze where context can be reduced
+
 ## Disclaimer
 
 This is a **personal project** and is not affiliated with, sponsored by, or endorsed by ClickHouse, Inc., Anthropic, or any other organization.
