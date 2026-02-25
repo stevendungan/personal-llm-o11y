@@ -14,6 +14,28 @@ This template provides a complete, production-ready setup for observing your Cla
 - 4-6GB available RAM
 - 2-5GB available disk space
 
+## After a Restart
+
+Once setup is complete, the only thing you need to do after rebooting your machine is start Docker and the containers:
+
+1. **Start the Docker daemon**
+   ```bash
+   open -a Docker
+   ```
+
+2. **Start the containers**
+   ```bash
+   cd personal-llm-o11y
+   docker compose up -d
+
+   # If using Grafana Cloud log collection:
+   docker compose --profile logs up -d
+   ```
+
+Wait 30-60 seconds for all services to initialize. The hook, env vars, and credentials persist across restarts — no reconfiguration needed.
+
+If you're only using Grafana Cloud (not local Langfuse), you can skip this step entirely since there are no local services to start.
+
 ## Quick Start
 
 Follow these steps to get Langfuse observability running in under 5 minutes:
@@ -58,22 +80,6 @@ Follow these steps to get Langfuse observability running in under 5 minutes:
    ```bash
    ./scripts/validate-setup.sh --post
    ```
-
-## After a Restart
-
-Once setup is complete, the only thing you need to do after rebooting your machine is start the Docker containers:
-
-```bash
-cd personal-llm-o11y
-docker compose up -d
-
-# If using Grafana Cloud log collection:
-docker compose --profile logs up -d
-```
-
-Wait 30-60 seconds for all services to initialize. The hook, env vars, and credentials persist across restarts — no reconfiguration needed.
-
-If you're only using Grafana Cloud (not local Langfuse), you can skip this step entirely since there are no local services to start.
 
 ## What Gets Captured
 
