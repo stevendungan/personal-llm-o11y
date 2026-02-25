@@ -53,6 +53,13 @@ HEALTH_CHECK_TIMEOUT = 2  # seconds
 def log(level: str, message: str) -> None:
     """Log a message to the log file."""
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Safety guard: truncate if log exceeds 50 MB (between retention runs)
+    try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > 50 * 1024 * 1024:
+            lines = LOG_FILE.read_text().splitlines()[-500:]
+            LOG_FILE.write_text("\n".join(lines) + "\n")
+    except Exception:
+        pass  # never block hook execution
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a") as f:
         f.write(f"{timestamp} [{level}] {message}\n")

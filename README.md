@@ -310,11 +310,32 @@ Edit `hooks/langfuse_hook.py` and modify the `tags` list in the `create_trace()`
 tags = ["claude-code", "my-custom-tag"]
 ```
 
-**Adjust log retention:**
-By default, logs are kept indefinitely. To clean up old logs:
+**Data retention:**
+
+Langfuse automatically deletes traces older than `LANGFUSE_RETENTION_DAYS` (default 30) via a nightly job. This covers PostgreSQL, ClickHouse, and MinIO.
+
+For local state files and on-demand pruning, use the retention script:
 ```bash
-# Clear hook logs older than 7 days
-find ~/.claude/state -name "langfuse_hook.log" -mtime +7 -delete
+# Preview what would be deleted
+python3 scripts/retention.py --dry-run
+
+# Prune traces older than 30 days + rotate logs + clean state
+python3 scripts/retention.py --days 30
+
+# Only rotate local files (skip Langfuse API)
+python3 scripts/retention.py --log-only
+```
+
+To schedule weekly cleanup (Sunday 3am):
+```
+0 3 * * 0 cd /path/to/personal-llm-o11y && ~/.claude/hooks/venv/bin/python scripts/retention.py --days 30 >> ~/.claude/state/retention.log 2>&1
+```
+
+To wipe everything and start fresh:
+```bash
+./scripts/flush.sh            # interactive prompt
+./scripts/flush.sh --yes      # skip confirmation
+./scripts/flush.sh --keep-state  # only wipe Docker volumes
 ```
 
 ## Operations
@@ -473,11 +494,14 @@ lsof -i :3050
 # Check volume sizes
 docker system df -v
 
-# Remove old traces (via Langfuse UI or API)
-# Or reset everything:
-docker compose down -v
-docker compose up -d
+# Prune old traces (keeps services running)
+python3 scripts/retention.py --days 14
+
+# Or wipe everything and start fresh
+./scripts/flush.sh
 ```
+
+See the **Data retention** section under Customization for scheduled cleanup.
 
 ## Resource Usage
 
